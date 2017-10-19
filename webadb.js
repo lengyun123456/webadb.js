@@ -650,38 +650,44 @@ var Adb = {};
 		// we need reduced logging during the data transfer otherwise the console may explode
 		let old_debug = Adb.Opt.debug;
 		let old_dump = Adb.Opt.dump;
-		Adb.Opt.debug = false;
-		Adb.Opt.dump = false;
 
 		// read the whole file
 		return read_blob(file).then(data =>
 			this.push_start(filename, mode).then(() => {
-				let seq = Promise.resolve();
-				let rem = file.size;
+				if (file.size == 0)
+					return;
+
 				let max = Math.min(0x10000, this.device.max_payload);
-				while (rem > 0) {
+				Adb.Opt.debug = false;
+				Adb.Opt.dump = false;
+
+				return (function push_next(stream, rem) {
 					// these two are needed here for the closure
 					let len = Math.min(rem, max);
-					let count = file.size - rem;
-					seq = seq.then(() => {
-						if (this.cancel) {
-							Adb.Opt.debug = old_debug;
-							Adb.Opt.dump = old_dump;
-							this.cancel();
+					let pos = file.size - rem;
+					return stream.push_data(data.slice(pos, pos + len)).then(function push_prog() {
+						if (stream.cancel) {
+							stream.cancel();
 							throw new Error("cancelled");
 						}
 						if (on_progress != null)
-							on_progress(count, file.size);
-						return this.push_data(data.slice(count, count + len));
+							on_progress(pos, file.size);
+						if (rem - len > 0)
+							return push_next(stream, rem - len);
 					});
-					rem -= len;
-				}
-				return seq.then(() => {
-					Adb.Opt.debug = old_debug;
-					Adb.Opt.dump = old_dump;
-					return this.push_done();
-				});
-			}));
+				})(this, file.size);
+			})
+			.then(() => {
+				Adb.Opt.debug = old_debug;
+				Adb.Opt.dump = old_dump;
+				return this.push_done();
+			})
+			.catch(e => {
+				Adb.Opt.debug = old_debug;
+				Adb.Opt.dump = old_dump;
+				return this.push_done().then(() => { throw e; });
+			})
+		);
 	};
 
 	Adb.Stream.prototype.quit = function() {
